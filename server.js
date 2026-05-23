@@ -321,11 +321,19 @@ app.get('/my-searches', async (req, res) => {
   const { email } = req.query;
   if (!email) return res.status(400).json({ error: 'Email required' });
   try {
+    // Get user plan first
+    const userResult = await pool.query('SELECT plan FROM users WHERE email = $1', [email]);
+    const plan = userResult.rows[0]?.plan || 'free';
+
+    // Plan-based history limits
+    const HISTORY_LIMITS = { free: 5, solo: 20, pro: 50, team: 100 };
+    const limit = HISTORY_LIMITS[plan] || 5;
+
     const result = await pool.query(
-      'SELECT id, specialty, location, result_count, results, created_at FROM searches WHERE email = $1 ORDER BY created_at DESC LIMIT 20',
-      [email]
+      'SELECT id, specialty, location, result_count, results, created_at FROM searches WHERE email = $1 ORDER BY created_at DESC LIMIT $2',
+      [email, limit]
     );
-    res.json({ searches: result.rows });
+    res.json({ searches: result.rows, history_limit: limit, plan });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
