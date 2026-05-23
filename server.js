@@ -27,6 +27,17 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS searches (
+      id SERIAL PRIMARY KEY,
+      email VARCHAR(255) NOT NULL,
+      specialty TEXT,
+      location TEXT,
+      result_count INTEGER DEFAULT 0,
+      results JSONB,
+      created_at TIMESTAMP DEFAULT NOW()
+    );
+  `);
   console.log('Database ready ✅');
 }
 initDB().catch(console.error);
@@ -184,6 +195,19 @@ app.post('/scrape-emails', async (req, res) => {
     }));
 
     const newUsed = leadsUsed + unique.length;
+
+    // Auto-save search to history
+    if (email && formatted.length > 0) {
+      try {
+        await pool.query(
+          'INSERT INTO searches (email, specialty, location, result_count, results) VALUES ($1, $2, $3, $4, $5)',
+          [email, specialty || '', location || '', formatted.length, JSON.stringify(formatted)]
+        );
+      } catch (saveErr) {
+        console.error('Failed to save search history:', saveErr.message);
+      }
+    }
+
     res.json({
       results: formatted, count: formatted.length,
       usage: { leads_used: newUsed, leads_limit: leadsLimit, leads_remaining: Math.max(0, leadsLimit - newUsed), plan: userPlan }
@@ -191,6 +215,50 @@ app.post('/scrape-emails', async (req, res) => {
 
   } catch (err) {
     console.error('Scrape error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+// ── SAVE SEARCH ──
+app.post('/save-search', async (req, res) => {
+  const { email, specialty, location, results } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    await pool.query(
+      'INSERT INTO searches (email, specialty, location, result_count, results) VALUES ($1, $2, $3, $4, $5)',
+      [email, specialty || '', location || '', results?.length || 0, JSON.stringify(results || [])]
+    );
+    res.json({ saved: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GET SEARCH HISTORY ──
+app.get('/my-searches', async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    const result = await pool.query(
+      'SELECT id, specialty, location, result_count, results, created_at FROM searches WHERE email = $1 ORDER BY created_at DESC LIMIT 20',
+      [email]
+    );
+    res.json({ searches: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── DELETE SEARCH ──
+app.delete('/my-searches/:id', async (req, res) => {
+  const { email } = req.query;
+  const { id } = req.params;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    await pool.query('DELETE FROM searches WHERE id = $1 AND email = $2', [id, email]);
+    res.json({ deleted: true });
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
