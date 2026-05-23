@@ -38,9 +38,54 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS search_cache (
+      id SERIAL PRIMARY KEY,
+      cache_key VARCHAR(500) UNIQUE NOT NULL,
+      specialty TEXT,
+      location TEXT,
+      result_count INTEGER DEFAULT 0,
+      results JSONB,
+      created_at TIMESTAMP DEFAULT NOW(),
+      hit_count INTEGER DEFAULT 0
+    );
+  `);
   console.log('Database ready ✅');
 }
 initDB().catch(console.error);
+
+// ── CACHE HELPERS ──
+const CACHE_TTL_DAYS = 7; // cached results stay fresh for 7 days
+
+function makeCacheKey(specialty, location, limit) {
+  // Normalize: lowercase, trim, sort words so "Miami Florida" == "florida miami"
+  const spec = (specialty || '').toLowerCase().trim().split(/\s+/).sort().join(' ');
+  const loc  = (location  || '').toLowerCase().trim().split(/\s+/).sort().join(' ');
+  return `${spec}|${loc}|${limit}`;
+}
+
+async function getCached(cacheKey) {
+  const result = await pool.query(
+    `SELECT * FROM search_cache
+     WHERE cache_key = $1
+     AND created_at > NOW() - INTERVAL '${CACHE_TTL_DAYS} days'`,
+    [cacheKey]
+  );
+  if (!result.rows.length) return null;
+  // Increment hit counter (fire-and-forget)
+  pool.query('UPDATE search_cache SET hit_count = hit_count + 1 WHERE cache_key = $1', [cacheKey]).catch(() => {});
+  return result.rows[0];
+}
+
+async function saveCache(cacheKey, specialty, location, results) {
+  await pool.query(
+    `INSERT INTO search_cache (cache_key, specialty, location, result_count, results)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (cache_key) DO UPDATE
+     SET results = $5, result_count = $4, created_at = NOW(), hit_count = 0`,
+    [cacheKey, specialty, location, results.length, JSON.stringify(results)]
+  );
+}
 
 app.use(cors({
   origin: ['https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
@@ -125,7 +170,34 @@ app.post('/scrape-emails', async (req, res) => {
     }
 
     const remaining = leadsLimit - leadsUsed;
-    const searchLimit = Math.min(parseInt(limit), 20, remaining);
+    const searchLimit = Math.min(parseInt(limit), 100, remaining);
+
+    // ── CACHE CHECK — serve cached results if available ──
+    const cacheKey = makeCacheKey(specialty, location, searchLimit);
+    const cached = await getCached(cacheKey);
+    if (cached) {
+      console.log(`Cache HIT: ${cacheKey} (${cached.hit_count + 1} hits)`);
+      // Slice to requested limit in case cache has more results
+      const cachedResults = (cached.results || []).slice(0, searchLimit);
+      const newUsed = leadsUsed + cachedResults.length;
+
+      // Still count against lead limit and save to user history
+      if (email && cachedResults.length > 0) {
+        await pool.query('UPDATE users SET leads_used = leads_used + $1 WHERE email = $2', [cachedResults.length, email]);
+        pool.query(
+          'INSERT INTO searches (email, specialty, location, result_count, results) VALUES ($1, $2, $3, $4, $5)',
+          [email, specialty || '', location || '', cachedResults.length, JSON.stringify(cachedResults)]
+        ).catch(() => {});
+      }
+
+      return res.json({
+        results: cachedResults,
+        count: cachedResults.length,
+        cached: true,
+        usage: { leads_used: newUsed, leads_limit: leadsLimit, leads_remaining: Math.max(0, leadsLimit - newUsed), plan: userPlan }
+      });
+    }
+    console.log(`Cache MISS: ${cacheKey} — calling Apify`);
 
     // Start Apify run
     const runResponse = await fetch(
@@ -208,8 +280,14 @@ app.post('/scrape-emails', async (req, res) => {
       }
     }
 
+    // Save to shared cache so future searches for same query skip Apify
+    saveCache(cacheKey, specialty || '', location || '', formatted).catch(err =>
+      console.error('Cache save failed:', err.message)
+    );
+
     res.json({
       results: formatted, count: formatted.length,
+      cached: false,
       usage: { leads_used: newUsed, leads_limit: leadsLimit, leads_remaining: Math.max(0, leadsLimit - newUsed), plan: userPlan }
     });
 
