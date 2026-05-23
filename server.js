@@ -250,6 +250,23 @@ app.get('/my-searches', async (req, res) => {
   }
 });
 
+// ── GET SINGLE SAVED SEARCH ──
+app.get('/my-searches/:id', async (req, res) => {
+  const { email } = req.query;
+  const { id } = req.params;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    const result = await pool.query(
+      'SELECT * FROM searches WHERE id = $1 AND email = $2',
+      [id, email]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Search not found' });
+    res.json({ search: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── DELETE SEARCH ──
 app.delete('/my-searches/:id', async (req, res) => {
   const { email } = req.query;
