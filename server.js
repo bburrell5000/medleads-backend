@@ -90,6 +90,9 @@ async function saveCache(cacheKey, specialty, location, results) {
 app.use(cors({
   origin: ['https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
 }));
+
+// Stripe webhook needs raw body — must come BEFORE express.json()
+app.use('/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 app.get('/', (req, res) => res.json({ status: 'MedLeads backend running ✅' }));
@@ -366,6 +369,86 @@ app.post('/customer-portal', async (req, res) => {
     const session = await stripe.billingPortal.sessions.create({ customer: customers.data[0].id, return_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html` });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── STRIPE WEBHOOK ──
+app.post('/webhook', async (req, res) => {
+  const sig = req.headers['stripe-signature'];
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+
+  let event;
+  try {
+    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+  } catch (err) {
+    console.error('Webhook signature failed:', err.message);
+    return res.status(400).send(`Webhook Error: ${err.message}`);
+  }
+
+  console.log(`Webhook received: ${event.type}`);
+
+  try {
+    if (event.type === 'checkout.session.completed') {
+      const session = event.data.object;
+      const email = session.customer_details?.email || session.metadata?.email;
+      const plan = session.metadata?.plan;
+
+      if (email && plan) {
+        await pool.query(
+          `INSERT INTO users (email, plan, leads_used)
+           VALUES ($1, $2, 0)
+           ON CONFLICT (email)
+           DO UPDATE SET plan = $2, leads_used = 0`,
+          [email, plan]
+        );
+        console.log(`Plan updated: ${email} → ${plan}`);
+      }
+    }
+
+    if (event.type === 'customer.subscription.updated') {
+      const sub = event.data.object;
+      // Get customer email from Stripe
+      const customer = await stripe.customers.retrieve(sub.customer);
+      const email = customer.email;
+      const status = sub.status;
+
+      if (email && (status === 'active' || status === 'trialing')) {
+        // Find which plan based on price ID
+        const priceId = sub.items.data[0]?.price?.id;
+        const PRICE_MAP = {
+          [process.env.STRIPE_PRICE_SOLO]: 'solo',
+          [process.env.STRIPE_PRICE_PRO]: 'pro',
+          [process.env.STRIPE_PRICE_TEAM]: 'team',
+        };
+        const plan = PRICE_MAP[priceId];
+        if (plan) {
+          await pool.query(
+            'UPDATE users SET plan = $1 WHERE email = $2',
+            [plan, email]
+          );
+          console.log(`Subscription updated: ${email} → ${plan}`);
+        }
+      }
+    }
+
+    if (event.type === 'customer.subscription.deleted') {
+      // Subscription cancelled — revert to free
+      const sub = event.data.object;
+      const customer = await stripe.customers.retrieve(sub.customer);
+      const email = customer.email;
+      if (email) {
+        await pool.query(
+          'UPDATE users SET plan = $1 WHERE email = $2',
+          ['free', email]
+        );
+        console.log(`Subscription cancelled: ${email} → free`);
+      }
+    }
+
+  } catch (err) {
+    console.error('Webhook handler error:', err.message);
+  }
+
+  res.json({ received: true });
 });
 
 app.listen(PORT, () => console.log(`MedLeads backend running on port ${PORT}`));
