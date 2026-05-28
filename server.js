@@ -93,7 +93,7 @@ async function saveCache(cacheKey, specialty, location, results) {
 }
 
 app.use(cors({
-  origin: ['https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
+  origin: ['https://medleads.org', 'https://www.medleads.org', 'https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
 }));
 
 // Stripe webhook needs raw body — must come BEFORE express.json()
