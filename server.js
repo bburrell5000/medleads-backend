@@ -24,8 +24,13 @@ async function initDB() {
       leads_used INTEGER DEFAULT 0,
       leads_reset_date TIMESTAMP DEFAULT NOW(),
       stripe_customer_id VARCHAR(255),
+      on_trial BOOLEAN DEFAULT FALSE,
+      trial_ends_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
     );
+    -- Add trial columns if they don't exist (for existing databases)
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS on_trial BOOLEAN DEFAULT FALSE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS trial_ends_at TIMESTAMP;
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS searches (
@@ -109,7 +114,15 @@ app.get('/user-status', async (req, res) => {
     }
     const user = result.rows[0];
     const limit = PLAN_LIMITS[user.plan] || 20;
-    res.json({ email: user.email, plan: user.plan, leads_used: user.leads_used, leads_limit: limit, leads_remaining: Math.max(0, limit - user.leads_used) });
+    res.json({ 
+      email: user.email, 
+      plan: user.plan, 
+      leads_used: user.leads_used, 
+      leads_limit: limit, 
+      leads_remaining: Math.max(0, limit - user.leads_used),
+      on_trial: user.on_trial || false,
+      trial_ends_at: user.trial_ends_at || null
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
