@@ -88,7 +88,7 @@ async function saveCache(cacheKey, specialty, location, results) {
 }
 
 app.use(cors({
-  origin: ['https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
+  origin: ['https://medleads.org', 'https://www.medleads.org', 'https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
 }));
 
 // Stripe webhook needs raw body — must come BEFORE express.json()
@@ -127,8 +127,8 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       line_items: [{ price: priceId, quantity: 1 }],
       metadata: { plan },
-      success_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html?session_id={CHECKOUT_SESSION_ID}&status=success`,
-      cancel_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html?status=cancelled`,
+      success_url: `https://medleads.org/medleads-auth.html?session_id={CHECKOUT_SESSION_ID}&status=success`,
+      cancel_url: `https://medleads.org/medleads-auth.html?status=cancelled`,
     });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -374,7 +374,7 @@ app.post('/customer-portal', async (req, res) => {
   try {
     const customers = await stripe.customers.list({ email: customer_email, limit: 1 });
     if (!customers.data.length) return res.status(404).json({ error: 'Customer not found' });
-    const session = await stripe.billingPortal.sessions.create({ customer: customers.data[0].id, return_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html` });
+    const session = await stripe.billingPortal.sessions.create({ customer: customers.data[0].id, return_url: `https://medleads.org/medleads-auth.html` });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
