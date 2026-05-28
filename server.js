@@ -88,7 +88,7 @@ async function saveCache(cacheKey, specialty, location, results) {
 }
 
 app.use(cors({
-  origin: ['https://medleads.org', 'https://www.medleads.org', 'https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
+  origin: ['https://bburrell5000.github.io', 'http://localhost:3000', 'http://127.0.0.1:5500']
 }));
 
 // Stripe webhook needs raw body — must come BEFORE express.json()
@@ -127,10 +127,108 @@ app.post('/create-checkout-session', async (req, res) => {
       customer_email: email || undefined,
       line_items: [{ price: priceId, quantity: 1 }],
       metadata: { plan },
-      success_url: `https://medleads.org/medleads-auth.html?session_id={CHECKOUT_SESSION_ID}&status=success`,
+      success_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html?session_id={CHECKOUT_SESSION_ID}&status=success`,
+      cancel_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html?status=cancelled`,
+    });
+    res.json({ url: session.url });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── TRIAL CHECKOUT — 30 days free then auto-charges ──
+app.post('/create-trial-session', async (req, res) => {
+  const { email } = req.body;
+  const priceId = process.env.STRIPE_PRICE_SOLO;
+  if (!priceId) return res.status(400).json({ error: 'Solo price not configured' });
+  try {
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      customer_email: email || undefined,
+      line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 30,
+        metadata: { plan: 'solo', trial: 'true' }
+      },
+      metadata: { plan: 'solo', trial: 'true' },
+      success_url: `https://medleads.org/medleads-auth.html?session_id={CHECKOUT_SESSION_ID}&status=success&trial=true`,
       cancel_url: `https://medleads.org/medleads-auth.html?status=cancelled`,
     });
     res.json({ url: session.url });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── CANCEL SUBSCRIPTION ──
+app.post('/cancel-subscription', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    // Find customer by email
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.status(404).json({ error: 'No customer found' });
+    
+    const customer = customers.data[0];
+    
+    // Get active subscriptions
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customer.id,
+      status: 'active',
+      limit: 1
+    });
+
+    // Also check trialing
+    const trialing = await stripe.subscriptions.list({
+      customer: customer.id,
+      status: 'trialing',
+      limit: 1
+    });
+
+    const sub = subscriptions.data[0] || trialing.data[0];
+    if (!sub) return res.status(404).json({ error: 'No active subscription found' });
+
+    // Cancel at period end — they keep access until billing date
+    await stripe.subscriptions.update(sub.id, { cancel_at_period_end: true });
+
+    const periodEnd = new Date(sub.current_period_end * 1000).toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric'
+    });
+
+    res.json({ 
+      cancelled: true, 
+      message: `Subscription cancelled. Access continues until ${periodEnd}.`,
+      access_until: periodEnd
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── SUBSCRIPTION STATUS ──
+app.get('/subscription-status', async (req, res) => {
+  const { email } = req.query;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+  try {
+    const customers = await stripe.customers.list({ email, limit: 1 });
+    if (!customers.data.length) return res.json({ has_subscription: false });
+    
+    const customer = customers.data[0];
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customer.id,
+      status: 'all',
+      limit: 1
+    });
+
+    if (!subscriptions.data.length) return res.json({ has_subscription: false });
+
+    const sub = subscriptions.data[0];
+    const periodEnd = new Date(sub.current_period_end * 1000).toLocaleDateString('en-US', {
+      month: 'long', day: 'numeric', year: 'numeric'
+    });
+
+    res.json({
+      has_subscription: true,
+      status: sub.status,
+      cancel_at_period_end: sub.cancel_at_period_end,
+      current_period_end: periodEnd,
+      plan: sub.metadata?.plan || 'unknown'
+    });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -374,7 +472,7 @@ app.post('/customer-portal', async (req, res) => {
   try {
     const customers = await stripe.customers.list({ email: customer_email, limit: 1 });
     if (!customers.data.length) return res.status(404).json({ error: 'Customer not found' });
-    const session = await stripe.billingPortal.sessions.create({ customer: customers.data[0].id, return_url: `https://medleads.org/medleads-auth.html` });
+    const session = await stripe.billingPortal.sessions.create({ customer: customers.data[0].id, return_url: `https://bburrell5000.github.io/Med-leads/medleads-auth.html` });
     res.json({ url: session.url });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
